@@ -1,0 +1,10 @@
+[project]
+name = "delta_neutral_aave_v3_uni_v3_w_e_t_h_u_s_d_c_base"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "almanak>=2.20.0",
+]
+
+[tool.almanak.run]
+interval = 60

@@ -1,0 +1,5 @@
+{
+  "display_name": "Delta-Neutral-AaveV3-UniV3-WETH-USDC-Base",
+  "description": "LP template dashboard for the Base delta-neutral strategy using Uniswap V3 and Aave V3.",
+  "icon": "⚖️"
+}

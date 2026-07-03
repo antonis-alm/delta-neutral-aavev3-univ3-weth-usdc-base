@@ -1,0 +1,55 @@
+{
+  "chain": "base",
+  "lending_protocol": "aave_v3",
+  "lp_protocol": "uniswap_v3",
+  "pool": "WETH/USDC/500",
+  "collateral_token": "WETH",
+  "borrow_token": "USDC",
+  "lending_leg_pct": "0.50",
+  "lp_leg_pct": "0.50",
+  "supply_collateral_pct_of_lending_leg": "1.00",
+  "borrow_target_pct_of_max_ltv": "0.60",
+  "borrow_hard_cap_pct_of_max_ltv": "0.72",
+  "recursive_loops": false,
+  "min_health_factor_for_borrow": "1.50",
+  "health_factor_target": "1.60",
+  "health_factor_floor": "1.50",
+  "emergency_threshold": "1.30",
+  "halt_new_actions_until_hf_above": "1.50",
+  "lp_base_width_pct": "0.10",
+  "vol_low_threshold_pct": "0.03",
+  "width_pct_below": "0.07",
+  "vol_high_threshold_pct": "0.06",
+  "width_pct_above": "0.15",
+  "atr_period": 7,
+  "atr_timeframe": "1d",
+  "rebalance_trigger_abs_pct_of_weth_supplied": "0.05",
+  "min_rebalance_cooldown_minutes": 60,
+  "fee_collect_cooldown_minutes": 240,
+  "min_lp_position_usd": "5",
+  "min_supply_step_pct_of_wallet_weth": "0.05",
+  "min_borrow_step_pct_of_debt_target": "0.05",
+  "force_action": "",
+  "force_position_id": null,
+  "token_funding": [
+    {
+      "symbol": "WETH",
+      "address": "0x4200000000000000000000000000000000000006",
+      "chain": "base",
+      "amount": "7",
+      "amount_type": "usd"
+    },
+    {
+      "symbol": "USDC",
+      "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "chain": "base",
+      "amount": "7",
+      "amount_type": "usd"
+    }
+  ],
+  "anvil_funding": {
+    "ETH": 10,
+    "WETH": 5,
+    "USDC": 100000
+  }
+}

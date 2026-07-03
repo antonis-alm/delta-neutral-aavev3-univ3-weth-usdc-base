@@ -39,6 +39,7 @@ def _market(
     max_borrow_usd: Decimal = Decimal("4000"),
     raise_health: bool = False,
     atr_value: Decimal = Decimal("90"),
+    fee_apr: Decimal = Decimal("0.20"),
 ):
     market = MagicMock()
 
@@ -68,6 +69,7 @@ def _market(
         )
 
     market.aave_health_factor.return_value = health_factor
+    market.best_pool.return_value = SimpleNamespace(data=SimpleNamespace(fee_apr=fee_apr))
     return market
 
 
@@ -171,9 +173,21 @@ def test_fee_collection_branch(strategy: DeltaNeutralAaveV3UniV3WETHUSDCBaseStra
     strategy._lp_weth_deployed_est = Decimal("0.98")
     strategy._last_fee_collect_at = datetime.now(UTC) - timedelta(minutes=600)
     strategy._last_rebalance_at = datetime.now(UTC)
-    market = _market(health_factor=Decimal("1.9"))
+    market = _market(health_factor=Decimal("1.9"), fee_apr=Decimal("0.20"))
     intent = strategy.decide(market)
     assert _intent_type(intent) == "LP_COLLECT_FEES"
+
+
+def test_fee_collection_blocked_below_reward_threshold(strategy: DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy):
+    strategy._weth_supplied = Decimal("1")
+    strategy._usdc_borrowed = Decimal("1000")
+    strategy._lp_position_id = "888"
+    strategy._lp_weth_deployed_est = Decimal("0.98")
+    strategy._last_fee_collect_at = datetime.now(UTC) - timedelta(minutes=600)
+    strategy._last_rebalance_at = datetime.now(UTC)
+    market = _market(health_factor=Decimal("1.9"), fee_apr=Decimal("0.001"))
+    intent = strategy.decide(market)
+    assert _intent_type(intent) == "HOLD"
 
 
 def test_health_unavailable_fail_closed_with_open_debt(strategy: DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy):

@@ -81,6 +81,7 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
         )
         self.min_rebalance_cooldown_minutes = int(self.get_config("min_rebalance_cooldown_minutes", 60))
         self.fee_collect_cooldown_minutes = int(self.get_config("fee_collect_cooldown_minutes", 240))
+        self.min_fee_collect_usd = Decimal(str(self.get_config("min_fee_collect_usd", "0.10")))
 
         self.min_lp_position_usd = Decimal(str(self.get_config("min_lp_position_usd", "250")))
         self.min_supply_step_pct_of_wallet_weth = Decimal(
@@ -201,7 +202,10 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
                     return self._lp_close_intent(self._lp_position_id)
 
         if self._lp_position_id is not None and self._fee_collect_cooldown_passed():
-            return self._collect_fees_intent(self._lp_position_id)
+            estimated_fees_usd = self._estimate_claimable_fees_usd(market, weth_price=weth_price, usdc_price=usdc_price)
+            if estimated_fees_usd is not None and estimated_fees_usd >= self.min_fee_collect_usd:
+                return self._collect_fees_intent(self._lp_position_id)
+            return Intent.hold(reason="LP rewards below claim threshold")
 
         return Intent.hold(reason="no action")
 
@@ -332,6 +336,47 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
             chain=self.chain,
         )
 
+    def _estimate_claimable_fees_usd(
+        self,
+        market: MarketSnapshot,
+        *,
+        weth_price: Decimal,
+        usdc_price: Decimal,
+    ) -> Decimal | None:
+        if self._last_fee_collect_at is None:
+            return Decimal("0")
+
+        elapsed_seconds = Decimal(str((datetime.now(UTC) - self._last_fee_collect_at).total_seconds()))
+        if elapsed_seconds <= 0:
+            return Decimal("0")
+
+        lp_notional_usd = (self._lp_weth_deployed_est * weth_price) + (self._lp_usdc_deployed_est * usdc_price)
+        if lp_notional_usd <= 0:
+            return Decimal("0")
+
+        token0, token1, *_ = (self.pool.split("/") + ["", ""])
+        try:
+            analytics = market.best_pool(
+                token0,
+                token1,
+                chain=self.chain,
+                metric="fee_apr",
+                protocols=[self.lp_protocol],
+            )
+            data = getattr(analytics, "data", analytics)
+            fee_apr = Decimal(str(getattr(data, "fee_apr", "0")))
+        except _DATA_UNAVAILABLE_ERRORS:
+            return None
+
+        if fee_apr <= 0:
+            return Decimal("0")
+        if fee_apr > 1:
+            fee_apr = fee_apr / Decimal("100")
+
+        yearly_seconds = Decimal("31536000")
+        estimated_fees_usd = lp_notional_usd * fee_apr * (elapsed_seconds / yearly_seconds)
+        return max(Decimal("0"), estimated_fees_usd)
+
     def _collect_fees_intent(self, position_id: str) -> Intent:
         return Intent.collect_fees(
             pool=self.pool,
@@ -418,6 +463,7 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
             self._lp_weth_deployed_est = Decimal(str(getattr(intent, "amount0", "0")))
             self._lp_usdc_deployed_est = Decimal(str(getattr(intent, "amount1", "0")))
             self._pending_reopen = False
+            self._last_fee_collect_at = datetime.now(UTC)
         elif intent_value == "LP_CLOSE":
             self._lp_position_id = None
             self._lp_range_lower = None

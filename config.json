@@ -26,6 +26,7 @@
   "rebalance_trigger_abs_pct_of_weth_supplied": "0.05",
   "min_rebalance_cooldown_minutes": 60,
   "fee_collect_cooldown_minutes": 240,
+  "min_fee_collect_usd": "0.10",
   "min_lp_position_usd": "5",
   "min_supply_step_pct_of_wallet_weth": "0.05",
   "min_borrow_step_pct_of_debt_target": "0.05",

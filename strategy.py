@@ -76,9 +76,6 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
         self.atr_period = int(self.get_config("atr_period", 7))
         self.atr_timeframe = str(self.get_config("atr_timeframe", "1d"))
 
-        self.rebalance_trigger_abs_pct_of_weth_supplied = Decimal(
-            str(self.get_config("rebalance_trigger_abs_pct_of_weth_supplied", "0.05"))
-        )
         self.min_rebalance_cooldown_minutes = int(self.get_config("min_rebalance_cooldown_minutes", 60))
         self.fee_collect_cooldown_minutes = int(self.get_config("fee_collect_cooldown_minutes", 240))
         self.min_fee_collect_usd = Decimal(str(self.get_config("min_fee_collect_usd", "0.10")))
@@ -193,13 +190,13 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
             lower, upper = self._price_range(weth_price, width_pct)
             return self._lp_open_intent(open_weth, open_usdc, lower, upper)
 
-        if self._weth_supplied > 0 and self._lp_position_id is not None:
-            lp_inventory = self._lp_weth_deployed_est if self._lp_weth_deployed_est > 0 else Decimal("0")
-            delta_ratio = abs(self._weth_supplied - lp_inventory) / self._weth_supplied
-            if delta_ratio >= self.rebalance_trigger_abs_pct_of_weth_supplied:
+        if self._lp_position_id is not None and self._lp_range_lower is not None and self._lp_range_upper is not None:
+            out_of_range = weth_price < self._lp_range_lower or weth_price > self._lp_range_upper
+            if out_of_range:
                 if self._rebalance_cooldown_passed():
                     self._pending_reopen = True
                     return self._lp_close_intent(self._lp_position_id)
+                return Intent.hold(reason="rebalance cooldown active")
 
         if self._lp_position_id is not None and self._fee_collect_cooldown_passed():
             estimated_fees_usd = self._estimate_claimable_fees_usd(market, weth_price=weth_price, usdc_price=usdc_price)

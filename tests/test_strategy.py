@@ -17,7 +17,9 @@ def _load_config() -> dict:
 
 @pytest.fixture
 def base_config() -> dict:
-    return _load_config()
+    cfg = _load_config()
+    cfg["idle_rsi_enabled"] = False
+    return cfg
 
 
 @pytest.fixture
@@ -40,6 +42,7 @@ def _market(
     raise_health: bool = False,
     atr_value: Decimal = Decimal("90"),
     fee_apr: Decimal = Decimal("0.20"),
+    rsi_value: Decimal = Decimal("50"),
 ):
     market = MagicMock()
 
@@ -56,6 +59,7 @@ def _market(
     market.price.side_effect = price
     market.balance.side_effect = balance
     market.atr.return_value = SimpleNamespace(value=atr_value)
+    market.rsi.return_value = SimpleNamespace(value=rsi_value)
 
     if raise_health:
         market.position_health.side_effect = ValueError("health unavailable")
@@ -238,6 +242,68 @@ def test_teardown_order_lp_repay_withdraw(strategy: DeltaNeutralAaveV3UniV3WETHU
     strategy._weth_supplied = Decimal("1.2")
     intents = strategy.generate_teardown_intents(mode=None)
     assert [_intent_type(i) for i in intents] == ["LP_CLOSE", "REPAY", "WITHDRAW"]
+
+
+def test_idle_rsi_buy_cross_swaps_usdc_to_weth(base_config: dict):
+    cfg = dict(base_config)
+    cfg["idle_rsi_enabled"] = True
+
+    strategy = DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(
+        config=cfg,
+        chain="base",
+        wallet_address="0x" + "1" * 40,
+    )
+    strategy._weth_supplied = Decimal("1")
+    strategy._usdc_borrowed = Decimal("1000")
+    strategy._lp_position_id = "777"
+    strategy._lp_range_lower = Decimal("2800")
+    strategy._lp_range_upper = Decimal("3200")
+    strategy._last_fee_collect_at = datetime.now(UTC)
+    strategy._prev_rsi = Decimal("50")
+
+    intent = strategy.decide(
+        _market(
+            health_factor=Decimal("1.8"),
+            weth_balance=Decimal("0.5"),
+            usdc_balance=Decimal("125"),
+            rsi_value=Decimal("44"),
+        )
+    )
+
+    assert _intent_type(intent) == "SWAP"
+    assert intent.from_token == "USDC"
+    assert intent.to_token == "WETH"
+
+
+def test_idle_rsi_sell_cross_swaps_weth_to_usdc(base_config: dict):
+    cfg = dict(base_config)
+    cfg["idle_rsi_enabled"] = True
+
+    strategy = DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(
+        config=cfg,
+        chain="base",
+        wallet_address="0x" + "1" * 40,
+    )
+    strategy._weth_supplied = Decimal("1")
+    strategy._usdc_borrowed = Decimal("1000")
+    strategy._lp_position_id = "777"
+    strategy._lp_range_lower = Decimal("2800")
+    strategy._lp_range_upper = Decimal("3200")
+    strategy._last_fee_collect_at = datetime.now(UTC)
+    strategy._prev_rsi = Decimal("50")
+
+    intent = strategy.decide(
+        _market(
+            health_factor=Decimal("1.8"),
+            weth_balance=Decimal("0.25"),
+            usdc_balance=Decimal("0"),
+            rsi_value=Decimal("56"),
+        )
+    )
+
+    assert _intent_type(intent) == "SWAP"
+    assert intent.from_token == "WETH"
+    assert intent.to_token == "USDC"
 
 
 def test_persistent_state_round_trip(base_config: dict):

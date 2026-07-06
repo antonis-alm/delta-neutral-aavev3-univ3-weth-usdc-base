@@ -31,6 +31,16 @@
   "min_borrow_step_pct_of_debt_target": "0.05",
   "force_action": "",
   "force_position_id": null,
+  "idle_rsi_enabled": true,
+  "rsi_period": 14,
+  "rsi_timeframe": "5m",
+  "rsi_buy_cross_below": "45",
+  "rsi_sell_cross_above": "55",
+  "idle_trade_fraction": "1.0",
+  "idle_max_slippage": "0.005",
+  "min_idle_trade_usd": "5",
+  "base_token_decimals": 18,
+  "quote_token_decimals": 6,
   "token_funding": [
     {
       "symbol": "WETH",

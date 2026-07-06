@@ -32,7 +32,7 @@ _DATA_UNAVAILABLE_ERRORS = (
     tags=["delta-neutral", "aave-v3", "uniswap-v3", "base"],
     supported_chains=["base"],
     supported_protocols=["aave_v3", "uniswap_v3"],
-    intent_types=["SUPPLY", "BORROW", "REPAY", "WITHDRAW", "LP_OPEN", "LP_CLOSE", "COLLECT_FEES", "HOLD"],
+    intent_types=["SUPPLY", "BORROW", "REPAY", "WITHDRAW", "LP_OPEN", "LP_CLOSE", "COLLECT_FEES", "SWAP", "HOLD"],
     default_chain="base",
     quote_asset="USD",
 )
@@ -91,6 +91,17 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
         self.force_action = str(self.get_config("force_action", "") or "").strip().lower()
         self.force_position_id = self.get_config("force_position_id", None)
 
+        self.idle_rsi_enabled = bool(self.get_config("idle_rsi_enabled", True))
+        self.rsi_period = int(self.get_config("rsi_period", 14))
+        self.rsi_timeframe = str(self.get_config("rsi_timeframe", "5m"))
+        self.rsi_buy_cross_below = Decimal(str(self.get_config("rsi_buy_cross_below", "45")))
+        self.rsi_sell_cross_above = Decimal(str(self.get_config("rsi_sell_cross_above", "55")))
+        self.idle_trade_fraction = Decimal(str(self.get_config("idle_trade_fraction", "1.0")))
+        self.idle_max_slippage = Decimal(str(self.get_config("idle_max_slippage", "0.005")))
+        self.min_idle_trade_usd = Decimal(str(self.get_config("min_idle_trade_usd", "5")))
+        self.base_token_decimals = int(self.get_config("base_token_decimals", 18))
+        self.quote_token_decimals = int(self.get_config("quote_token_decimals", 6))
+
         self._weth_supplied = Decimal("0")
         self._usdc_borrowed = Decimal("0")
         self._last_hf: Decimal | None = None
@@ -105,6 +116,8 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
         self._last_fee_collect_at: datetime | None = None
         self._rebalance_count = 0
         self._fees_collected_count = 0
+        self._prev_rsi: Decimal | None = None
+        self._last_rsi_signal: str | None = None
 
     def decide(self, market: MarketSnapshot) -> Intent | None:
         if self.force_action:
@@ -121,6 +134,10 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
         health = inputs["health"]
         hf = inputs["hf"]
         width_pct = inputs["width_pct"]
+        current_rsi = inputs["rsi_value"]
+        prev_rsi = self._prev_rsi
+        if current_rsi is not None:
+            self._prev_rsi = current_rsi
 
         if hf is not None:
             self._last_hf = hf
@@ -204,6 +221,17 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
                 return self._collect_fees_intent(self._lp_position_id)
             return Intent.hold(reason="LP rewards below claim threshold")
 
+        idle_swap = self._idle_rsi_swap_intent(
+            prev_rsi=prev_rsi,
+            current_rsi=current_rsi,
+            weth_balance=Decimal(str(weth_balance.balance)),
+            usdc_balance=Decimal(str(usdc_balance.balance)),
+            weth_price=weth_price,
+            usdc_price=usdc_price,
+        )
+        if idle_swap is not None:
+            return idle_swap
+
         return Intent.hold(reason="no action")
 
     def _read_inputs(self, market: MarketSnapshot) -> dict[str, Any] | Intent:
@@ -232,6 +260,14 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
         except _DATA_UNAVAILABLE_ERRORS:
             width_pct = self.lp_base_width_pct
 
+        rsi_value: Decimal | None = None
+        if self.idle_rsi_enabled:
+            try:
+                rsi = market.rsi(self.collateral_token, period=self.rsi_period, timeframe=self.rsi_timeframe)
+                rsi_value = Decimal(str(rsi.value))
+            except _DATA_UNAVAILABLE_ERRORS:
+                rsi_value = None
+
         health = None
         hf = None
         needs_health = self._weth_supplied > 0 or self._usdc_borrowed > 0 or self._halt_new_actions
@@ -255,7 +291,69 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
             "health": health,
             "hf": hf,
             "width_pct": width_pct,
+            "rsi_value": rsi_value,
         }
+
+    def _idle_rsi_swap_intent(
+        self,
+        *,
+        prev_rsi: Decimal | None,
+        current_rsi: Decimal | None,
+        weth_balance: Decimal,
+        usdc_balance: Decimal,
+        weth_price: Decimal,
+        usdc_price: Decimal,
+    ) -> Intent | None:
+        if not self.idle_rsi_enabled or prev_rsi is None or current_rsi is None:
+            return None
+
+        buy_cross = prev_rsi >= self.rsi_buy_cross_below and current_rsi < self.rsi_buy_cross_below
+        sell_cross = prev_rsi <= self.rsi_sell_cross_above and current_rsi > self.rsi_sell_cross_above
+
+        if buy_cross:
+            usdc_to_trade = (usdc_balance * self.idle_trade_fraction).quantize(
+                Decimal(f"1e-{self.quote_token_decimals}"), rounding=ROUND_DOWN
+            )
+            if usdc_to_trade <= 0:
+                return None
+
+            trade_usd = usdc_to_trade * usdc_price
+            if trade_usd < self.min_idle_trade_usd:
+                return None
+
+            self._last_rsi_signal = "buy"
+            return Intent.swap(
+                from_token=self.borrow_token,
+                to_token=self.collateral_token,
+                amount=usdc_to_trade,
+                max_slippage=self.idle_max_slippage,
+                protocol=self.lp_protocol,
+                chain=self.chain,
+            )
+
+        if sell_cross:
+            weth_to_trade = (weth_balance * self.idle_trade_fraction).quantize(
+                Decimal(f"1e-{self.base_token_decimals}"), rounding=ROUND_DOWN
+            )
+            if weth_to_trade <= 0:
+                return None
+
+            trade_usd = weth_to_trade * weth_price
+            if trade_usd < self.min_idle_trade_usd:
+                return None
+
+            self._last_rsi_signal = "sell"
+            return Intent.swap(
+                from_token=self.collateral_token,
+                to_token=self.borrow_token,
+                amount=weth_to_trade,
+                max_slippage=self.idle_max_slippage,
+                protocol=self.lp_protocol,
+                chain=self.chain,
+            )
+
+        return None
+
 
     def _price_range(self, center_price: Decimal, width_pct: Decimal) -> tuple[Decimal, Decimal]:
         half = width_pct / Decimal("2")
@@ -487,6 +585,8 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
             "rebalance_count": self._rebalance_count,
             "fees_collected_count": self._fees_collected_count,
             "halt_new_actions": self._halt_new_actions,
+            "prev_rsi": str(self._prev_rsi) if self._prev_rsi is not None else None,
+            "last_rsi_signal": self._last_rsi_signal,
         }
 
     def get_persistent_state(self) -> dict[str, Any]:
@@ -505,6 +605,8 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
             "last_fee_collect_at": self._last_fee_collect_at.isoformat() if self._last_fee_collect_at else None,
             "rebalance_count": self._rebalance_count,
             "fees_collected_count": self._fees_collected_count,
+            "prev_rsi": str(self._prev_rsi) if self._prev_rsi is not None else None,
+            "last_rsi_signal": self._last_rsi_signal,
         }
 
     def load_persistent_state(self, state: dict[str, Any]) -> None:
@@ -533,6 +635,10 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
 
         self._rebalance_count = int(state.get("rebalance_count", 0))
         self._fees_collected_count = int(state.get("fees_collected_count", 0))
+
+        prev_rsi = state.get("prev_rsi")
+        self._prev_rsi = Decimal(str(prev_rsi)) if prev_rsi is not None else None
+        self._last_rsi_signal = state.get("last_rsi_signal")
 
     def get_open_positions(self) -> "TeardownPositionSummary":
         from almanak.framework.teardown import PositionInfo, PositionType, TeardownPositionSummary

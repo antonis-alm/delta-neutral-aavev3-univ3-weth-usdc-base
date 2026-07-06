@@ -118,6 +118,7 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
         self._fees_collected_count = 0
         self._prev_rsi: Decimal | None = None
         self._last_rsi_signal: str | None = None
+        self._last_idle_reason: str | None = None
 
     def decide(self, market: MarketSnapshot) -> Intent | None:
         if self.force_action:
@@ -231,6 +232,9 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
         if idle_swap is not None:
             return idle_swap
 
+        if self._last_idle_reason:
+            return Intent.hold(reason=self._last_idle_reason)
+
         return Intent.hold(reason="no action")
 
     def _read_inputs(self, market: MarketSnapshot) -> dict[str, Any] | Intent:
@@ -303,7 +307,16 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
         weth_price: Decimal,
         usdc_price: Decimal,
     ) -> Intent | None:
-        if not self.idle_rsi_enabled or prev_rsi is None or current_rsi is None:
+        if not self.idle_rsi_enabled:
+            self._last_idle_reason = None
+            return None
+
+        if current_rsi is None:
+            self._last_idle_reason = "idle RSI unavailable"
+            return None
+
+        if prev_rsi is None:
+            self._last_idle_reason = f"idle RSI priming at {current_rsi:.2f}"
             return None
 
         buy_cross = prev_rsi >= self.rsi_buy_cross_below and current_rsi < self.rsi_buy_cross_below
@@ -314,13 +327,16 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
                 Decimal(f"1e-{self.quote_token_decimals}"), rounding=ROUND_DOWN
             )
             if usdc_to_trade <= 0:
+                self._last_idle_reason = f"idle RSI buy cross but no {self.borrow_token} balance"
                 return None
 
             trade_usd = usdc_to_trade * usdc_price
             if trade_usd < self.min_idle_trade_usd:
+                self._last_idle_reason = f"idle RSI buy cross but trade ${trade_usd:.2f} < min ${self.min_idle_trade_usd}"
                 return None
 
             self._last_rsi_signal = "buy"
+            self._last_idle_reason = f"idle RSI buy cross {prev_rsi:.2f}->{current_rsi:.2f}"
             return Intent.swap(
                 from_token=self.borrow_token,
                 to_token=self.collateral_token,
@@ -335,13 +351,16 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
                 Decimal(f"1e-{self.base_token_decimals}"), rounding=ROUND_DOWN
             )
             if weth_to_trade <= 0:
+                self._last_idle_reason = f"idle RSI sell cross but no {self.collateral_token} balance"
                 return None
 
             trade_usd = weth_to_trade * weth_price
             if trade_usd < self.min_idle_trade_usd:
+                self._last_idle_reason = f"idle RSI sell cross but trade ${trade_usd:.2f} < min ${self.min_idle_trade_usd}"
                 return None
 
             self._last_rsi_signal = "sell"
+            self._last_idle_reason = f"idle RSI sell cross {prev_rsi:.2f}->{current_rsi:.2f}"
             return Intent.swap(
                 from_token=self.collateral_token,
                 to_token=self.borrow_token,
@@ -350,8 +369,12 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
                 protocol=self.lp_protocol,
                 chain=self.chain,
             )
-
+        self._last_idle_reason = (
+            f"idle RSI no cross prev={prev_rsi:.2f} current={current_rsi:.2f} "
+            f"(buy< {self.rsi_buy_cross_below}, sell> {self.rsi_sell_cross_above})"
+        )
         return None
+
 
 
     def _price_range(self, center_price: Decimal, width_pct: Decimal) -> tuple[Decimal, Decimal]:

@@ -219,7 +219,6 @@ class DeltaNeutralAaveV3UniV3WETHUSDCBaseStrategy(IntentStrategy):
             estimated_fees_usd = self._estimate_claimable_fees_usd(market, weth_price=weth_price, usdc_price=usdc_price)
             if estimated_fees_usd is not None and estimated_fees_usd >= self.min_fee_collect_usd:
                 return self._collect_fees_intent(self._lp_position_id)
-            return Intent.hold(reason="LP rewards below claim threshold")
 
         idle_swap = self._idle_rsi_swap_intent(
             prev_rsi=prev_rsi,
